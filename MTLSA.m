@@ -26,26 +26,29 @@
 
 function MTLSA(floder, name_train, name_test,lam_iter,Smallest_lambda_rate)
 current_path=cd;
-Num_lambda=str2num(lam_iter);
-smallest_rate=str2double(Smallest_lambda_rate);
-addpath(genpath([current_path '/functions/'])); % load function
+Num_lambda=str2num(lam_iter); % 正则化系数搜索次数（如100）
+smallest_rate=str2double(Smallest_lambda_rate); % 最小λ₁/最大λ₁的比例（如0.01）
+addpath(genpath([current_path '/functions/'])); % load function % 添加SLEP/MALSAR工具包路径
 
-% tell the direction where it contains train/test data.
+% tell the direction where it contains train/test data. % 读取数据（由survival_data_pre.m生成的.mat文件）
 dir=strcat(current_path,'/data/',floder); 
-load(strcat(dir,name_train,'.mat')); % load training data.
-load(strcat(dir,name_test,'.mat')); % load testing data.
-d = size(X, 2);  % dimensionality.
-max_day = size(Y,2);
+load(strcat(dir,name_train,'.mat')); % load training data. % 加载训练集X/W/Y/Time/Status
+load(strcat(dir,name_test,'.mat')); % load testing data. % 加载测试集X_test/W_test/Y_test/Time_test/Status_test
+d = size(X, 2);  % dimensionality. % 特征维度
+max_day = size(Y,2); % 时间任务数（max_time）
 
+% 统一测试集Y_test的维度（和训练集max_day一致）
 Y_test=Y_test(:,1:max_day);
 Y=Y(:,1:max_day);
 W=W(:,1:max_day);
-opts.init = 0;      % guess start point from data. 
-opts.tFlag = 1;     % terminate after relative objective value does not changes much.
-opts.tol = 10^-4;   % tolerance. 
-opts.maxIter = 1000; % maximum iteration number of optimization.
 
-%%build the output matrix
+% 优化器参数（ADMM的终止条件）
+opts.init = 0;      % guess start point from data.  % 0=从数据初始化，1=温启动（后续迭代复用前一次参数）
+opts.tFlag = 1;     % terminate after relative objective value does not changes much.  % 按目标函数相对变化终止
+opts.tol = 10^-4;   % tolerance.  % 收敛容忍度
+opts.maxIter = 1000; % maximum iteration number of optimization. % 优化最大迭代次数
+
+%%build the output matrix  % 存储不同λ₁下的结果
 sparsity = zeros(Num_lambda, 1);
 cindex=zeros(Num_lambda, 1);
 
@@ -106,44 +109,49 @@ for i = 1: Num_lambda
 end
 toc; %output the training time
 
-%% TESTING
+%% TESTING %% 测试阶段：对每个λ₁下的模型评估性能
 for i = 1: Num_lambda
-    result=X_test*ALL_B{i};
-     %call the sequence_bottomup function to make sure the prediction 
-     %follows the non-negative non-increasing list structure  
+    result=X_test*ALL_B{i}; % 1. 预测：测试集特征 × 模型参数B → 各时间任务的预测值
+     %call the sequence_bottomup function to make sure the prediction  % 2. 修正预测值：保证非负且非递增
+     %follows the non-negative non-increasing list structure   % sequence_bottomup：文献中提出的单调性约束函数
     for ii = 1:num_sample
         result(ii,:)=sequence_bottomup(result(ii,:),num_task);
     end
-    % evaluate the model performance by concordance index
-    cindex(i)=getcindex_nocox(sum(result,2),Time_test,Status_test);
-    % evaluate the model performance by calculating AUC for each task
+    % evaluate the model performance by concordance index % 3. 计算C-index（生存时间排序一致性）
+    cindex(i)=getcindex_nocox(sum(result,2),Time_test,Status_test); % sum(result,2)：将各时间任务的预测值求和，作为整体生存风险值
+    % evaluate the model performance by calculating AUC for each task % 4. 计算每个时间任务的AUC
     for k =1:num_task
-        temp=find(W_test(:,k));
-        label=Y_test(temp,k);
-        contains(k)=size(temp,1);
-        if length(unique(label))>1
-            pred=result(temp,k);
-            [X_pred,Y_Pred,T_Pred,AUC_Pred] = perfcurve(label,pred,1);
+        temp=find(W_test(:,k)); 找到第k个任务的有效样本（W_test=1）
+        label=Y_test(temp,k); % 有效样本的真实标签（0/1/0.5，0.5会被过滤）
+        contains(k)=size(temp,1); % 第k个任务的有效样本数
+        if length(unique(label))>1 % 标签需包含0和1，否则无法计算AUC
+            pred=result(temp,k); % 有效样本的预测值
+            [X_pred,Y_Pred,T_Pred,AUC_Pred] = perfcurve(label,pred,1); % perfcurve：MATLAB内置函数，计算二分类AUC
             AUC_matrix(i,k)=AUC_Pred;
         end
     end
     
 end
 
-%calculating the weighted average of AUC
-haveAUC=find(AUC_matrix(1,:));
+%calculating the weighted average of AUC % 5. 计算加权平均AUC（按各任务有效样本数加权）
+haveAUC=find(AUC_matrix(1,:)); % 找到有有效AUC的任务
 weighted_AUC=(AUC_matrix(:,haveAUC)*contains(haveAUC,:))/sum(contains(haveAUC));
+
+% 输出最优结果
 X_disp = ['Best possible weighted AUC is: ',num2str(max(weighted_AUC)),...
     ' and the Best possible Cindex is: ',num2str(max(cindex))];
 disp(X_disp)
 disp(['Please check the "',name_test,Smallest_lambda_rate,'_result.mat" file to check all the results']) 
 disp('with respect to different lambdas and select the best lambda for your own dataset.')
-% draw figure
+
+% draw figure % 绘制λ₁与稀疏度的关系图
 h = figure;
 plot(log_lam, sparsity);
 xlabel('log(\lambda_1)')
 ylabel('Row Sparsity of Model (Percentage of All-Zero Columns)')
 title('Row Sparsity of Predictive Model when Changing Regularization Parameter');
+
+% 保存所有结果
 save(strcat(dir,name_test,Smallest_lambda_rate,'_result.mat'),'ALL_B',...
     'weighted_AUC','cindex','lambda','AUC_matrix','sparsity');
 end
