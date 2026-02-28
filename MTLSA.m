@@ -121,7 +121,7 @@ for i = 1: Num_lambda
     cindex(i)=getcindex_nocox(sum(result,2),Time_test,Status_test); % sum(result,2)：将各时间任务的预测值求和，作为整体生存风险值
     % evaluate the model performance by calculating AUC for each task % 4. 计算每个时间任务的AUC
     for k =1:num_task
-        temp=find(W_test(:,k)); 找到第k个任务的有效样本（W_test=1）
+        temp=find(W_test(:,k)); %找到第k个任务的有效样本（W_test=1）
         label=Y_test(temp,k); % 有效样本的真实标签（0/1/0.5，0.5会被过滤）
         contains(k)=size(temp,1); % 第k个任务的有效样本数
         if length(unique(label))>1 % 标签需包含0和1，否则无法计算AUC
